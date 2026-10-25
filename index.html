@@ -47,12 +47,10 @@ input:focus,select:focus{outline:2px solid var(--ac);outline-offset:1px}
 section{display:none}section.on{display:block}
 #toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(20px + env(safe-area-inset-bottom,0px));background:var(--tx);color:var(--bg);padding:11px 18px;border-radius:22px;opacity:0;transition:opacity .2s;pointer-events:none;z-index:9;box-shadow:var(--sh)}
 #toast.on{opacity:1}
-body.nologin nav,body.nologin section,body.nologin #logout{display:none!important}
-#login{display:none}body.nologin #login{display:block}
 </style>
 </head>
-<body class="nologin">
-<h1>Gestão da Pensão<button id="logout" style="float:right;padding:4px 12px;font-size:14px;background:rgba(255,255,255,.18);color:#fff;border:0">Sair</button></h1>
+<body>
+<h1>Gestão da Pensão</h1>
 <nav>
 <button class="on" data-t="rooms">Quartos</button>
 <button data-t="month">Mensal</button>
@@ -120,11 +118,6 @@ body.nologin nav,body.nologin section,body.nologin #logout{display:none!importan
 <div class="card" id="mov"></div>
 <button id="csv" style="width:100%">Exportar tudo (CSV)</button>
 </section>
-<div id="login"><div class="card"><h3 style="margin-top:0">Entrar</h3>
-<input id="l-mail" type="email" autocomplete="username" placeholder="E-mail">
-<input id="l-pass" type="password" autocomplete="current-password" placeholder="Senha" style="margin-top:8px">
-<button class="p" id="l-btn" style="width:100%;margin-top:8px">Entrar</button>
-<div class="mut" id="l-err" style="margin-top:8px"></div></div></div>
 <div id="toast"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.39.3/dist/umd/supabase.js"></script>
@@ -410,9 +403,8 @@ function makeDb(sb){
   };
 }
 
-/* Login e inicialização */
+/* Inicialização (sem login) */
 let sb=null,started=false;
-const setLogin=on=>document.body.classList.toggle("nologin",on);
 function startApp(){
   if(started)return;started=true;
   db=makeDb(sb);
@@ -422,26 +414,10 @@ function startApp(){
   document.addEventListener("visibilitychange",()=>{if(!document.hidden)db.reloadAll()});
   setInterval(()=>db.reloadAll(),30000);
 }
-$("#l-btn").onclick=async()=>{
-  const email=$("#l-mail").value.trim(),password=$("#l-pass").value;
-  $("#l-err").textContent="";
-  if(!email||!password){$("#l-err").textContent="Informe e-mail e senha.";return}
-  try{
-    const {error}=await sb.auth.signInWithPassword({email,password});
-    if(error){$("#l-err").textContent="E-mail ou senha incorretos.";return}
-    $("#l-pass").value="";setLogin(false);startApp();
-  }catch(e){$("#l-err").textContent="Falha de conexão. Tente novamente."}
-};
-$("#l-pass").addEventListener("keydown",e=>{if(e.key==="Enter")$("#l-btn").click()});
-$("#logout").onclick=async()=>{try{await sb.auth.signOut()}catch(e){}location.reload()};
-(async()=>{
+(function(){
   if(!window.supabase){$("#msg").textContent="Não foi possível carregar a biblioteca do Supabase. Verifique a internet e recarregue.";$("#msg").style.display="block";return}
-  sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
-  sb.auth.onAuthStateChange(ev=>{if(ev==="SIGNED_OUT"&&started)location.reload()});
-  try{
-    const {data}=await sb.auth.getSession();
-    if(data.session){setLogin(false);startApp()}
-  }catch(e){$("#msg").textContent="Falha ao conectar ao Supabase.";$("#msg").style.display="block"}
+  try{sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);startApp()}
+  catch(e){$("#msg").textContent="Falha ao conectar ao Supabase.";$("#msg").style.display="block"}
 })();
 </script>
 </body>
