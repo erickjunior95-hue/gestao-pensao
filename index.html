@@ -51,6 +51,9 @@ section{display:none}section.on{display:block}
 </head>
 <body>
 <h1>Gestão da Pensão</h1>
+<div class="row" style="margin:8px 2px 0;align-items:center"><div id="status" class="mut">Conectando…</div><button class="s" id="diag" style="padding:6px 10px;font-size:13px">Testar conexão</button></div>
+<div id="diag-out" class="card mut" style="display:none;white-space:pre-wrap;font-size:13px"></div>
+<div id="werr" class="card" style="display:none;border-left:5px solid var(--bad)"><b>Erro ao gravar</b><div id="werr-t" class="mut" style="white-space:pre-wrap;margin-top:4px"></div><button id="werr-x" style="margin-top:8px">Fechar</button></div>
 <nav>
 <button class="on" data-t="rooms">Quartos</button>
 <button data-t="month">Mensal</button>
@@ -120,7 +123,7 @@ section{display:none}section.on{display:block}
 </section>
 <div id="toast"></div>
 
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.39.3/dist/umd/supabase.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
 const $=s=>document.querySelector(s);
 const brl=n=>(+n||0).toLocaleString("pt-BR",{style:"currency",currency:"BRL"});
@@ -134,7 +137,9 @@ $("#day").value=dayOf(Date.now());
 
 function toast(t){const e=$("#toast");e.textContent=t;e.classList.add("on");clearTimeout(toast.h);toast.h=setTimeout(()=>e.classList.remove("on"),2200)}
 function esc(s){const d=document.createElement("div");d.textContent=s;return d.innerHTML}
-function needDb(){if(!db){toast("Sem conexão com o banco. Entre novamente ou verifique a internet.");return false}return true}
+let initMsg="";
+function setStatus(ok,txt){$("#status").innerHTML='<span style="color:var(--'+(ok?'ok':'bad')+')">●</span> '+esc(txt)}
+function needDb(){if(!db){const m="Sem conexão com o banco: "+(initMsg||"o Supabase ainda não iniciou. Aguarde alguns segundos e tente de novo.");setStatus(false,m);alert(m);return false}return true}
 
 document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>{
   document.querySelectorAll("nav button").forEach(x=>x.classList.toggle("on",x===b));
@@ -369,35 +374,99 @@ render();
 /* Supabase */
 const SUPABASE_URL="https://ezuylqrwputvwptcgtyf.supabase.co";
 const SUPABASE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV6dXlscXJ3cHV0dndwdGNndHlmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI5Mjg0OTIsImV4cCI6MjEwODUwNDQ5Mn0.ZDMtzNdFF24hg42GA7Liyt9VnosLsPk5gk_RqyD5ocA";
-const TABLES={rooms:"quartos",tenants:"mensalistas",products:"produtos",sales:"vendas",expenses:"despesas",cashops:"movimentacoes_caixa",stays:"locacoes",rents:"pagamentos_mensais",config:"config"};
+function explainErr(e){
+  const m=((e&&e.message)||String(e)).toLowerCase(),c=(e&&e.code)||"";
+  if(m.includes("could not be cloned")||m.includes("dataclone"))return "Esta página está rodando dentro de uma visualização (como a do Claude), que bloqueia o acesso ao Supabase. Publique o index.html (GitHub Pages, Netlify…) e abra pelo endereço publicado.";
+  if(c==="42703"||(m.includes("column")&&(m.includes("does not exist")||m.includes("schema cache"))))return "Falta uma coluna no banco de dados. Rode o supabase.sql completo no SQL Editor do Supabase.";
+  if(c==="42P01"||c==="PGRST205"||c==="PGRST202"||m.includes("does not exist")||m.includes("schema cache"))return "As tabelas ainda não existem no Supabase. Rode o arquivo supabase.sql no SQL Editor do Supabase.";
+  if(c==="42501"||m.includes("row-level security")||m.includes("permission denied"))return "O Supabase negou o acesso às tabelas. Rode o supabase.sql atualizado no SQL Editor para liberar o acesso.";
+  if(m.includes("invalid api key")||m.includes("jwt")||c==="401")return "A chave do Supabase foi recusada. Confira a Anon Key no código do index.html.";
+  if(m.includes("failed to fetch")||m.includes("networkerror")||m.includes("load failed"))return "Sem conexão com o Supabase. Verifique a internet.";
+  return "Erro do Supabase: "+((e&&(e.message||e.code))||e);
+}
+function reportErr(e){const el=$("#msg");el.textContent=explainErr(e);el.style.color="var(--bad)";el.style.display="block";setStatus(false,explainErr(e))}
+function reportWriteErr(e){const m=(e&&e.message)||String(e);$("#werr-t").textContent=m+(e&&e.code?"\n(código "+e.code+")":"")+"\n\n"+explainErr(e);$("#werr").style.display="block"}
+$("#werr-x").onclick=()=>{$("#werr").style.display="none"};
+/* Mapeamento app <-> colunas do banco */
+const iso=ms=>ms?new Date(ms).toISOString():null;
+const tms=v=>{const n=v?Date.parse(v):NaN;return isNaN(n)?Date.now():n};
+const num=v=>v==null?null:Number(v);
+const SPEC={
+  rooms:{t:"quartos",
+    to:p=>{const r={};
+      if("name"in p){r.nome=p.name;r.valor_hora=prices.hour}
+      if("startedAt"in p||"cleaning"in p)r.status=p.cleaning?"limpeza":(p.startedAt?"ocupado":"livre");
+      if("startedAt"in p){r.inicio=iso(p.startedAt);if(p.startedAt)r.valor_hora=prices.hour}
+      if("pay"in p)r.forma_pagamento=p.pay||null;
+      if("troco"in p)r.troco=num(p.troco);
+      return r},
+    from:r=>({id:String(r.id),name:r.nome,startedAt:r.inicio?Date.parse(r.inicio):null,pay:r.forma_pagamento||null,troco:num(r.troco),cleaning:r.status==="limpeza"})},
+  tenants:{t:"mensalistas",
+    to:p=>({nome:p.name,quarto:p.room||"",valor:p.value,dia_vencimento:p.due,status:"ativo"}),
+    from:r=>({id:String(r.id),name:r.nome,room:r.quarto||"",value:Number(r.valor),due:Number(r.dia_vencimento)})},
+  products:{t:"produtos",
+    to:p=>{const r={};if("name"in p)r.nome=p.name;if("price"in p)r.preco=p.price;return r},
+    from:r=>({id:String(r.id),name:r.nome,price:Number(r.preco)})},
+  sales:{t:"vendas",
+    to:p=>({produto_nome:p.name,quantidade:p.qty,valor_total:p.total,forma_pagamento:p.pay||null}),
+    from:r=>({id:String(r.id),name:r.produto_nome,qty:Number(r.quantidade),total:Number(r.valor_total),pay:r.forma_pagamento||null,ts:tms(r.created_at)})},
+  expenses:{t:"despesas",
+    to:p=>({descricao:p.desc,categoria:p.cat,valor:p.total,forma_pagamento:p.pay||null}),
+    from:r=>({id:String(r.id),desc:r.descricao,cat:r.categoria,total:Number(r.valor),pay:r.forma_pagamento||null,ts:tms(r.created_at)})},
+  cashops:{t:"movimentacoes_caixa",
+    to:p=>({tipo:p.tipo,descricao:p.desc||"",valor:p.total}),
+    from:r=>({id:String(r.id),tipo:r.tipo,desc:r.descricao||"",total:Number(r.valor),ts:tms(r.created_at)})},
+  stays:{t:"locacoes",
+    to:p=>({quarto:p.room,inicio:iso(p.start),fim:iso(p.end),horas:p.hours,valor:p.total,forma_pagamento:p.pay||null,troco:p.troco||0}),
+    from:r=>({id:String(r.id),room:r.quarto,start:tms(r.inicio),end:tms(r.fim),hours:Number(r.horas),total:Number(r.valor),pay:r.forma_pagamento||null,troco:Number(r.troco||0),ts:tms(r.fim||r.created_at)})},
+  rents:{t:"pagamentos_mensais",
+    to:p=>({mensalista_id:String(p.tid),nome:p.name,quarto:p.room||"",mes:p.month,valor:p.total,forma_pagamento:p.pay||null}),
+    from:r=>({id:String(r.id),tid:String(r.mensalista_id),name:r.nome,room:r.quarto||"",month:r.mes,total:Number(r.valor),pay:r.forma_pagamento||null,ts:tms(r.created_at)})},
+  config:{t:"config",
+    to:p=>({valor_hora:p.hour,preco_agua:p.agua,preco_cerveja:p.cerveja,preco_garrafao:p.garrafao}),
+    from:r=>{const o={};[["hour","valor_hora"],["agua","preco_agua"],["cerveja","preco_cerveja"],["garrafao","preco_garrafao"]].forEach(([k,c])=>{if(r[c]!=null)o[k]=Number(r[c])});return o}}
+};
 
-/* Camada de acesso: cada linha = {id, data(jsonb)}; atualização em tempo real via Realtime */
+/* Acesso ao Supabase: leitura (fetchData) + escrita com alert de erro + atualização em tempo real */
 function makeDb(sb){
   const loaders={};
-  const snapOf=rows=>({docs:rows.map(r=>({id:r.id,data:()=>({...(r.data||{})})}))});
-  const fetchAll=async c=>{const {data,error}=await sb.from(TABLES[c]).select("id,data");if(error)throw error;return data||[]};
-  const kick=c=>(loaders[c]||[]).forEach(f=>f());
-  const ck=e=>{if(e)throw e};
+  const badT={};
+  const fetchRows=async c=>{
+    const {data,error}=await sb.from(SPEC[c].t).select("*");
+    if(error){badT[c]=explainErr(error)+" ("+SPEC[c].t+": "+error.message+")";reportErr(error);setStatus(false,badT[c]);throw error}
+    delete badT[c];
+    const k=Object.keys(badT)[0];
+    if(k){setStatus(false,badT[k])}else{$("#msg").style.display="none";setStatus(true,"Conectado ao Supabase")}
+    return data||[];
+  };
+  /* fetchData(c): busca imediatamente a tabela c (ou todas) e atualiza a tela */
+  const fetchData=c=>{(c?[c]:Object.keys(loaders)).forEach(k=>(loaders[k]||[]).forEach(e=>e.now()))};
+  const write=async fn=>{
+    try{const {error}=await fn();if(error)throw error}
+    catch(error){reportWriteErr(error);alert("Erro no Supabase: "+((error&&error.message)||String(error)));throw error}
+  };
   function listen(c,cb,errcb){
     let timer=null;
-    const load=()=>{clearTimeout(timer);timer=setTimeout(async()=>{try{cb(await fetchAll(c))}catch(e){errcb&&errcb(e)}},80)};
-    (loaders[c]=loaders[c]||[]).push(load);
-    sb.channel("rt-"+c+"-"+Math.random().toString(36).slice(2)).on("postgres_changes",{event:"*",schema:"public",table:TABLES[c]},load).subscribe();
-    load();
+    const run=async()=>{try{cb(await fetchRows(c))}catch(e){errcb&&errcb(e)}};
+    (loaders[c]=loaders[c]||[]).push({now:run,soon:()=>{clearTimeout(timer);timer=setTimeout(run,80)}});
+    const entry=loaders[c][loaders[c].length-1];
+    sb.channel("rt-"+c+"-"+Math.random().toString(36).slice(2)).on("postgres_changes",{event:"*",schema:"public",table:SPEC[c].t},entry.soon).subscribe();
+    run();
   }
   return{
-    reloadAll(){Object.keys(loaders).forEach(kick)},
+    fetchData,
+    reloadAll:()=>fetchData(),
     collection:c=>({
-      add:async d=>{const {error}=await sb.from(TABLES[c]).insert({data:d});ck(error);kick(c)},
-      onSnapshot:(f,e)=>listen(c,rows=>f(snapOf(rows)),e)
+      add:async d=>{await write(()=>sb.from(SPEC[c].t).insert(SPEC[c].to(d)));fetchData(c)},
+      onSnapshot:(f,e)=>listen(c,rows=>f({docs:rows.map(r=>({id:String(r.id),data:()=>SPEC[c].from(r)}))}),e)
     }),
     doc:path=>{
-      const i=path.indexOf("/"),c=path.slice(0,i),id=path.slice(i+1),t=()=>sb.from(TABLES[c]);
+      const i=path.indexOf("/"),c=path.slice(0,i),id=path.slice(i+1),t=()=>sb.from(SPEC[c].t);
       return{
-        update:async d=>{const {data:row,error:e1}=await t().select("data").eq("id",id).maybeSingle();ck(e1);if(!row)throw new Error("registro não encontrado");const {error}=await t().update({data:{...row.data,...d}}).eq("id",id);ck(error);kick(c)},
-        set:async d=>{const {error}=await t().upsert({id,data:d});ck(error);kick(c)},
-        delete:async()=>{const {error}=await t().delete().eq("id",id);ck(error);kick(c)},
-        onSnapshot:(f,e)=>listen(c,rows=>{const r=rows.find(x=>x.id===id);f({exists:!!r,data:()=>({...(r?r.data:{})})})},e)
+        update:async d=>{await write(()=>t().update(SPEC[c].to(d)).eq("id",id));fetchData(c)},
+        set:async d=>{await write(()=>t().upsert({id,...SPEC[c].to(d)}));fetchData(c)},
+        delete:async()=>{await write(()=>t().delete().eq("id",id));fetchData(c)},
+        onSnapshot:(f,e)=>listen(c,rows=>{const r=rows.find(x=>String(x.id)===id);f({exists:!!r,data:()=>r?SPEC[c].from(r):{}})},e)
       };
     }
   };
@@ -414,10 +483,47 @@ function startApp(){
   document.addEventListener("visibilitychange",()=>{if(!document.hidden)db.reloadAll()});
   setInterval(()=>db.reloadAll(),30000);
 }
-(function(){
-  if(!window.supabase){$("#msg").textContent="Não foi possível carregar a biblioteca do Supabase. Verifique a internet e recarregue.";$("#msg").style.display="block";return}
-  try{sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);startApp()}
-  catch(e){$("#msg").textContent="Falha ao conectar ao Supabase.";$("#msg").style.display="block"}
+/* fetch "seguro": converte Headers em objeto simples e remove o signal (alguns ambientes isolados não conseguem copiá-los) */
+const safeFetch=(input,init)=>{
+  const o={...(init||{})};
+  if(o.headers&&!Array.isArray(o.headers)&&typeof o.headers.forEach==="function"){const h={};o.headers.forEach((v,k)=>{h[k]=v});o.headers=h}
+  delete o.signal;
+  const url=typeof input==="string"?input:(input&&input.url)||String(input);
+  return fetch(url,o);
+};
+function loadScript(src){return new Promise((ok,no)=>{const e=document.createElement("script");e.src=src;e.onload=ok;e.onerror=()=>no(new Error("falha ao baixar "+src));document.head.appendChild(e)})}
+const COLS={rooms:"id,nome,status,valor_hora,inicio,forma_pagamento,troco,created_at",tenants:"id,nome,quarto,valor,dia_vencimento,status,created_at",products:"id,nome,preco,created_at",sales:"id,produto_nome,quantidade,valor_total,forma_pagamento,created_at",expenses:"id,descricao,categoria,valor,forma_pagamento,created_at",cashops:"id,tipo,descricao,valor,created_at",stays:"id,quarto,inicio,fim,horas,valor,forma_pagamento,troco,created_at",rents:"id,mensalista_id,nome,quarto,mes,valor,forma_pagamento,created_at",config:"id,valor_hora,preco_agua,preco_cerveja,preco_garrafao"};
+$("#diag").onclick=async()=>{
+  const out=$("#diag-out");out.style.display="block";out.textContent="Testando…";
+  const L=["Biblioteca Supabase: "+(window.supabase?"carregada":"NÃO carregou"),"Endereço: "+SUPABASE_URL];
+  if(!sb){L.push("Cliente: não iniciou"+(initMsg?" — "+initMsg:""));out.textContent=L.join("\n");return}
+  let bad=0;
+  for(const c of Object.keys(SPEC)){
+    try{const r=await sb.from(SPEC[c].t).select(COLS[c]).limit(1);if(r.error){bad++;L.push("✗ "+SPEC[c].t+": "+r.error.message)}else L.push("✓ "+SPEC[c].t+": leitura e colunas ok")}
+    catch(e){bad++;L.push("✗ "+SPEC[c].t+": "+(e.message||e))}
+  }
+  try{
+    const ins=await sb.from("produtos").insert({nome:"__teste__",preco:0});
+    if(ins.error){bad++;L.push("✗ Gravar: "+ins.error.message)}
+    else{const del=await sb.from("produtos").delete().eq("nome","__teste__");L.push("✓ Gravar em produtos: ok"+(del.error?" (não consegui apagar o teste: "+del.error.message+")":" (teste apagado)"))}
+  }catch(e){bad++;L.push("✗ Gravar: "+(e.message||e))}
+  L.push(bad?"\nHá "+bad+" problema(s). Copie este texto e me envie no chat.":"\nTudo certo com o banco.");
+  out.textContent=L.join("\n");
+};
+(async function(){
+  if(!window.supabase){
+    for(const u of ["https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.js","https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"]){
+      try{await loadScript(u)}catch(e){}
+      if(window.supabase)break;
+    }
+  }
+  if(!window.supabase){
+    initMsg="a biblioteca do Supabase não carregou (verifique a internet ou bloqueadores de conteúdo).";
+    setStatus(false,"Biblioteca do Supabase não carregou");
+    $("#msg").textContent="Não foi possível carregar a biblioteca do Supabase. Verifique a internet e recarregue.";$("#msg").style.display="block";return;
+  }
+  try{sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY,{global:{fetch:safeFetch}});startApp()}
+  catch(e){initMsg="falha ao iniciar o Supabase: "+(e.message||e);setStatus(false,initMsg);$("#msg").textContent=initMsg;$("#msg").style.display="block"}
 })();
 </script>
 </body>
